@@ -115,7 +115,13 @@ select{cursor:pointer}
     </div>
   </div>
 </div>
-<div id="cross"></div><div id="netBadge" style="position:fixed;right:16px;top:130px;z-index:20;padding:7px 10px;background:rgba(10,18,12,.8);border:1px solid rgba(255,255,255,.2);font:12px monospace;pointer-events:none">온라인 연결 중…</div>
+<div id="cross"></div>
+<div id="chatPanel" hidden style="position:fixed;left:16px;bottom:110px;width:min(420px,calc(100vw - 32px));z-index:80;background:rgba(8,14,10,.94);border:1px solid rgba(255,255,255,.3);padding:10px;font:13px var(--font-body);pointer-events:auto">
+  <div id="chatLog" style="height:150px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:8px;color:#eef0e4"></div>
+  <form id="chatForm" style="display:flex;gap:6px"><input id="chatInput" maxlength="180" placeholder="메시지 입력 후 Enter" autocomplete="off" style="flex:1;min-width:0"><button class="btn primary" type="submit" style="padding:6px 10px">전송</button></form>
+  <div style="font-size:11px;color:#a3ae9c;margin-top:5px">T 또는 Enter: 채팅 열기 · Esc: 닫기</div>
+</div>
+<div id="netBadge" style="position:fixed;right:16px;top:130px;z-index:20;padding:7px 10px;background:rgba(10,18,12,.8);border:1px solid rgba(255,255,255,.2);font:12px monospace;pointer-events:none">온라인 연결 중…</div>
 <div id="mine" hidden><b></b></div>
 <div id="inv" hidden><div class="invpanel" id="invPanel"></div></div>
 <div id="cursorItem" hidden></div>
@@ -714,6 +720,7 @@ const player={x:8.5,y:60,z:8.5,vx:0,vy:0,vz:0,kx:0,kz:0,onGround:false,yaw:0,pit
 const netBadge=document.getElementById('netBadge');
 const remotePlayers=new Map();
 let net=null,netRoom='',netId='',netSendT=0,applyingRemoteBlock=false;
+let chatOpen=false,netHp=20,playerHitCooldown=0;
 const netName='플레이어-'+Math.floor(100+Math.random()*900);
 function netSend(data){if(net&&net.readyState===WebSocket.OPEN)net.send(JSON.stringify(data));}
 function connectMultiplayer(){
@@ -730,9 +737,21 @@ function connectMultiplayer(){
     if(m.type==='leave'){removeRemotePlayer(m.id);}
     if(m.type==='block'&&m.id!==netId){applyingRemoteBlock=true;setBlock(m.x,m.y,m.z,m.block);applyingRemoteBlock=false;}
     if(m.type==='room'){netBadge.textContent='온라인 · 방 '+netRoom+' · '+m.count+'명';}
+    if(m.type==='chat'){appendChat(m.name||'플레이어',m.text||'');}
+    if(m.type==='hit'&&m.targetId===netId){netHp=Math.max(0,netHp-(Number(m.damage)||3));hp=netHp;hurtFlash=.35;renderVitals();showMsg((m.name||'플레이어')+'에게 맞았습니다!');if(hp<=0){$('deadMsg').textContent='다른 플레이어에게 패배했습니다.';setMode('dead');}}
   };
 }
 function joinNetRoom(){netRoom=String(seedStr||'world').slice(0,40);netSend({type:'join',room:netRoom,name:netName,seed:netRoom});}
+function appendChat(name,text){
+  const log=$('chatLog');const line=document.createElement('div');line.textContent=name+': '+text;log.appendChild(line);while(log.children.length>40)log.removeChild(log.firstChild);log.scrollTop=log.scrollHeight;
+}
+function setChatOpen(open){chatOpen=open;$('chatPanel').hidden=!open;if(open){if(isLocked())document.exitPointerLock();$('chatInput').focus();}else{$('chatInput').blur();if(mode==='play')requestLock();}}
+function tryHitPlayer(){
+  if(playerHitCooldown>0)return false;
+  let best=null,bestD=3.2;const dx=-Math.sin(player.yaw),dz=-Math.cos(player.yaw);
+  remotePlayers.forEach((r,id)=>{const x=r.group.position.x-player.x,z=r.group.position.z-player.z,y=r.group.position.y-player.y;const d=Math.hypot(x,z);if(d<.001||d>bestD||Math.abs(y)>2.2)return;const dot=(x*dx+z*dz)/d;if(dot>.72){best={id,d};bestD=d;}});
+  if(best){netSend({type:'hit',targetId:best.id,damage:3});playerHitCooldown=.55;showMsg('플레이어 공격!');startSwing();return true;}return false;
+}
 function updateNetCount(ps){netBadge.textContent='온라인 · 방 '+netRoom+' · '+Math.max(ps.length,remotePlayers.size+1)+'명';}
 function updateRemotePlayer(p){
   let r=remotePlayers.get(p.id);
@@ -1451,7 +1470,7 @@ function die(){
   setMode('dead');
 }
 function respawn(){
-  hp=20;food=20;foodT=0;regenT=0;starveT=0;invul=2;fallStart=null;
+  hp=20;netHp=20;food=20;foodT=0;regenT=0;starveT=0;invul=2;fallStart=null;
   player.x=spawn.x;player.y=spawn.y;player.z=spawn.z;player.vx=player.vy=player.vz=0;player.kx=player.kz=0;
   renderVitals();setMode('play');requestLock();
 }
@@ -1963,19 +1982,20 @@ function startPlay(){
   if(!started){started=true;player.yaw=menuYaw;player.pitch=0;showMsg(spawnReady?'나무를 캐서 판자와 제작대를 만들어 보세요':'월드를 불러오는 중…');}
   setMode('play');requestLock();
 }
-document.addEventListener('pointerlockchange',function(){if(!isLocked()&&mode==='play')setMode('menu');});
+document.addEventListener('pointerlockchange',function(){if(!isLocked()&&mode==='play'&&!chatOpen)setMode('menu');});
 
 let drag=null;
 canvas.addEventListener('mousedown',function(e){
   if(mode!=='play')return;
   if(!isLocked()){drag={x:e.clientX,y:e.clientY,moved:false,btn:e.button};requestLock();return;}
-  if(e.button===0)mouseL=true;else if(e.button===2)useRight();
+  if(e.button===0){if(!tryHitPlayer())mouseL=true;}else if(e.button===2)useRight();
 });
 window.addEventListener('mouseup',function(){
   if(drag){
     if(!drag.moved&&mode==='play'){
       if(drag.btn===0){
-        if(mobTarget){attackMob(mobTarget.m);startSwing();}
+        if(tryHitPlayer()){}
+        else if(mobTarget){attackMob(mobTarget.m);startSwing();}
         else if(target){breakBlock(target);startSwing();}
       }else if(drag.btn===2)useRight();
     }
@@ -2002,6 +2022,8 @@ window.addEventListener('blur',function(){for(const k in keys)keys[k]=false;mous
 window.addEventListener('keydown',function(e){
   const tg=e.target&&e.target.tagName;
   if(tg==='INPUT'||tg==='SELECT'){if(e.key==='Enter'&&e.target.id==='seedInput')newWorld(seedInput.value.trim()||randomSeed());return;}
+  if(e.code==='KeyT'&&mode==='play'&&!chatOpen){e.preventDefault();setChatOpen(true);return;}
+  if(chatOpen){if(e.code==='Escape'){e.preventDefault();setChatOpen(false);}return;}
   keys[e.code]=true;
   if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].indexOf(e.code)>=0)e.preventDefault();
   if(mode==='play'){
@@ -2014,6 +2036,9 @@ window.addEventListener('keydown',function(e){
   }
 });
 window.addEventListener('keyup',function(e){keys[e.code]=false;});
+
+$('chatForm').addEventListener('submit',function(e){e.preventDefault();const input=$('chatInput');const text=input.value.trim();if(text){netSend({type:'chat',text:text.slice(0,180)});appendChat(netName,text.slice(0,180));input.value='';}setChatOpen(false);});
+$('chatInput').addEventListener('keydown',function(e){if(e.key==='Escape'){e.preventDefault();setChatOpen(false);}});
 
 /* ================= menu ================= */
 const seedInput=$('seedInput'),distSel=$('distSel');
@@ -2029,7 +2054,7 @@ function newWorld(s){
   seedStr=s;seed=hashStr(s);noise=makeNoise(seed);noise3=makeNoise3(seed);if(net&&net.readyState===WebSocket.OPEN)joinNetRoom();
   seedInput.value=s;
   inv=new Array(36).fill(null);cursor=null;sel=0;grid2.fill(null);grid3.fill(null);
-  hp=20;food=20;foodT=0;regenT=0;starveT=0;invul=0;hurtFlash=0;fallStart=null;
+  hp=20;netHp=20;food=20;foodT=0;regenT=0;starveT=0;invul=0;hurtFlash=0;fallStart=null;
   spawnReady=false;spawn={x:8.5,y:60,z:8.5};
   player.x=8.5;player.y=60;player.z=8.5;player.vx=player.vy=player.vz=0;player.kx=player.kz=0;
   lastPcx=null;lastPcz=null;target=null;mobTarget=null;mining=null;hl.visible=false;
@@ -2069,6 +2094,7 @@ function drawMini(){
 /* ================= main loop ================= */
 let last=performance.now(),fps=60,uiT=0;
 function frame(now){
+  playerHitCooldown=Math.max(0,playerHitCooldown-(1/60));
   requestAnimationFrame(frame);
   let dt=(now-last)/1000;last=now;if(dt>.1)dt=.1;if(dt<=0)dt=.001;
   fps=fps*.95+(1/dt)*.05;

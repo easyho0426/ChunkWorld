@@ -41,6 +41,15 @@ wss.on('connection', ws => {
       const n = v => Number.isFinite(Number(v)) ? Math.max(-100000,Math.min(100000,Number(v))) : 0;
       client.state = {type:'player',id,name:client.name,x:n(m.x),y:n(m.y),z:n(m.z),yaw:n(m.yaw),pitch:n(m.pitch)};
       broadcast(client.room,client.state,id);
+    } else if (m.type === 'chat') {
+      const message = safe(m.text || '', 180).trim();
+      if (message) broadcast(client.room, {type:'chat', id, name:client.name, text:message});
+    } else if (m.type === 'hit') {
+      const targetId = safe(m.targetId || '', 32);
+      const target = clients.get(targetId);
+      if (target && target.room === client.room && targetId !== id) {
+        broadcast(client.room, {type:'hit', id, targetId, name:client.name, damage:3});
+      }
     } else if (m.type === 'block') {
       const x=Number(m.x),y=Number(m.y),z=Number(m.z),block=Number(m.block);
       if (![x,y,z,block].every(Number.isInteger) || y<0 || y>63 || Math.abs(x)>100000 || Math.abs(z)>100000 || block<0 || block>255) return;
