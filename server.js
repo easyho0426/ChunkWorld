@@ -3,6 +3,13 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocketServer, WebSocket } = require('ws');
 const PORT = process.env.PORT || 3000;
+// Set DATA_DIR=/data when using a Render persistent disk.
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const WORLDS_FILE = path.join(DATA_DIR, 'worlds.json');
+let worlds = {};
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); if (fs.existsSync(WORLDS_FILE)) worlds = JSON.parse(fs.readFileSync(WORLDS_FILE, 'utf8')) || {}; } catch (e) { console.error('월드 저장 파일을 읽지 못했습니다:', e.message); worlds = {}; }
+let saveTimer = null;
+function persistWorlds() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(WORLDS_FILE, JSON.stringify(worlds)); } catch (e) { console.error('월드 저장 실패:', e.message); } }, 150); }
 const html = path.join(__dirname, 'index.html');
 const server = http.createServer((req, res) => {
   if (req.url === '/health') { res.writeHead(200, {'content-type':'text/plain; charset=utf-8'}); return res.end('ok'); }
@@ -32,6 +39,8 @@ wss.on('connection', ws => {
       client.state = {type:'player',id,name:client.name,x:8.5,y:60,z:8.5,yaw:0,pitch:0};
       const peers = roomPeers(next).filter(([pid]) => pid !== id).map(([,c]) => c.state).filter(Boolean);
       send(ws,{type:'players',players:peers});
+      const savedBlocks = worlds[next] || {};
+      send(ws,{type:'world',blocks:Object.entries(savedBlocks).map(([key,block])=>{const [x,y,z]=key.split(',').map(Number);return {x,y,z,block};})});
       send(ws,{type:'room',count:peers.length+1});
       broadcast(next,{type:'player',...client.state},id);
       return;
@@ -48,11 +57,15 @@ wss.on('connection', ws => {
       const targetId = safe(m.targetId || '', 32);
       const target = clients.get(targetId);
       if (target && target.room === client.room && targetId !== id) {
-        broadcast(client.room, {type:'hit', id, targetId, name:client.name, damage:3});
+        broadcast(client.room, {type:'hit', id, targetId, name:client.name, damage:3, x:client.state?.x ?? 0, z:client.state?.z ?? 0});
       }
     } else if (m.type === 'block') {
       const x=Number(m.x),y=Number(m.y),z=Number(m.z),block=Number(m.block);
       if (![x,y,z,block].every(Number.isInteger) || y<0 || y>63 || Math.abs(x)>100000 || Math.abs(z)>100000 || block<0 || block>255) return;
+      const roomWorld = worlds[client.room] || (worlds[client.room] = {});
+      const key = `${x},${y},${z}`;
+      if (block === 0) roomWorld[key] = 0; else roomWorld[key] = block;
+      persistWorlds();
       broadcast(client.room,{type:'block',id,x,y,z,block},id);
     }
   });
